@@ -104,6 +104,96 @@ DECISIONES_RAW = [
     ("NMMMMMMMMMMMILKMM", "UNA PLAGA AZOTA A LOS CAMPESINOS"),
 ]
 
+# ── ÁRBOL DE CONSECUENCIAS ───────────────────────────────────────────────────
+# Formato: decision_idx → lista de (meses_delay, texto_evento, efectos)
+# efectos: {'pop': {faccion_idx: delta}, 'fuerza': {faccion_idx: delta},
+#           'tesoro': delta, 'costos': delta}
+CONSECUENCIAS = {
+    # 0 = Servicio militar obligatorio → deserción masiva al cabo de 3 meses
+    0: [(3,
+         "DESERCIÓN MASIVA EN EL EJÉRCITO CONSCRIPTO\n"
+         "  Los soldados forzados huyen en masa. La moral es por los suelos.",
+         {"pop": {0: -2}, "fuerza": {0: -2}})],
+
+    # 5 = Expulsar asesores militares rusos → los rusos congelan relaciones
+    5: [(1,
+         "LOS RUSOS CONGELAN SUS RELACIONES CON RITIMBA\n"
+         "  Moscú retira a su embajador y suspende los acuerdos comerciales.",
+         {"pop": {6: -3}, "tesoro": -150})],
+
+    # 7 = Comprar más armas → el ejército exige más presupuesto para mantenimiento
+    7: [(2,
+         "EL EJÉRCITO EXIGE PRESUPUESTO PARA MANTENER EL ARMAMENTO\n"
+         "  El nuevo equipo requiere técnicos y repuestos costosos.",
+         {"pop": {0: 1}, "costos": 15})],
+
+    # 13 = Legalizar sindicatos → huelga general a los 4 meses
+    13: [(4,
+          "LOS SINDICATOS CONVOCAN UNA HUELGA GENERAL\n"
+          "  El país se paraliza. Los trabajadores exigen más derechos.",
+          {"pop": {1: 2, 2: -2}, "tesoro": -250})],
+
+    # 18 = Nacionalizar banca americana → sanciones económicas de EEUU
+    18: [(2,
+          "EEUU IMPONE SANCIONES ECONÓMICAS A RITIMBA\n"
+          "  Washington congela activos y prohíbe inversiones en el país.",
+          {"pop": {7: -3, 6: 1}, "tesoro": -400})],
+
+    # 27 = Poderes regionales a terratenientes → abusan del poder
+    27: [(3,
+          "LOS TERRATENIENTES ABUSAN DE SUS PODERES REGIONALES\n"
+          "  Imponen tributos ilegales a los campesinos de sus provincias.",
+          {"pop": {1: -2, 2: 1}})],
+
+    # 29 = Alquilar base naval a rusos → EEUU amenaza cortar ayuda
+    29: [(1,
+          "EEUU AMENAZA CON CORTAR TODA LA AYUDA A RITIMBA\n"
+          "  El Departamento de Estado exige el cierre inmediato de la base rusa.",
+          {"pop": {7: -4}, "tesoro": -100})],
+
+    # 32 = Cortar poderes policía completamente → colapso policial
+    32: [(2,
+          "COLAPSO DE LA POLICÍA SECRETA: CIENTOS DE PRESOS LIBERADOS\n"
+          "  Sin estructura, la policía se desintegra. La oposición festeja.",
+          {"pop": {1: 3, 0: -1}, "fuerza": {5: -3}})],
+
+    # 33 = Ampliar mucho poderes policía → escándalo de torturas
+    33: [(2,
+          "ESCÁNDALO INTERNACIONAL: TORTURAS EN CÁRCELES RITIMBANAS\n"
+          "  Amnistía Internacional denuncia al gobierno ante la ONU.",
+          {"pop": {1: -2, 2: -1, 7: -2}})],
+
+    # 39 = Nacionalizar empresas lefotanas → embargo comercial
+    39: [(1,
+          "LEFTOTO DECLARA EMBARGO COMERCIAL TOTAL A RITIMBA\n"
+          "  Las exportaciones de plátano quedan bloqueadas en la frontera.",
+          {"pop": {4: -2}, "fuerza": {4: 2}, "costos": 20})],
+
+    # 41 = Comprar artillería pesada → maniobras intimidatorias en la frontera
+    41: [(1,
+          "EL EJÉRCITO REALIZA MANIOBRAS CERCA DE LA FRONTERA CON LEFTOTO\n"
+          "  La tensión sube. Los lefotanos refuerzan sus posiciones.",
+          {"pop": {0: 1, 4: -2}, "fuerza": {4: 1}})],
+
+    # 42 = Libre circulación campesinos → éxodo campo-ciudad
+    41: [(3,
+          "ÉXODO MASIVO DEL CAMPO A LA CIUDAD\n"
+          "  Miles de campesinos abandonan las tierras. La producción agrícola cae.",
+          {"pop": {1: 1, 2: -2}, "tesoro": -200})],
+
+    # 97 idx en DECISIONES_RAW = milicias patronales (idx 42)
+    42: [(2,
+          "MILICIAS PATRONALES ATACAN A TRABAJADORES EN HUELGA\n"
+          "  Varios heridos. La comunidad internacional condena la represión.",
+          {"pop": {1: -3, 2: 2, 0: -1}})],
+
+    # 31 = Reducir impuestos → inversión extranjera llega (positivo!)
+    30: [(4,
+          "INVERSIÓN EXTRANJERA LLEGA A RITIMBA ATRAÍDA POR LOS BAJOS IMPUESTOS\n"
+          "  Varias empresas abren plantas en el país. El tesoro se beneficia.",
+          {"tesoro": 450, "pop": {2: 1}})],
+}
+
 # Menús de iniciativa del jugador: (texto, rango de índices 0-based en DECISIONES_RAW)
 MENUS_DECISION = [
     ("COMPLACER A UN GRUPO",        (24, 30)),
@@ -207,6 +297,7 @@ class Juego:
         self.mes = 0            # mth
         self.record = 0         # hst — persiste entre partidas
         self.control_pos = 0    # pc: mes en que puede pedir informe policial otra vez
+        self.pendientes = []    # [(mes_disparo, texto, efectos)]
 
     def efecto_si(self, idx):
         """Aplica efectos de decir SÍ a la decisión idx."""
@@ -234,6 +325,45 @@ class Juego:
                 self.facciones[i]["fuerza"] = max(0, min(9, self.facciones[i]["fuerza"] + delta))
 
         self.usadas[idx] = True
+        self._programar_consecuencias(idx)
+
+    def _programar_consecuencias(self, idx):
+        """Encola las consecuencias futuras de haber dicho SÍ a idx."""
+        for delay, texto, efectos in CONSECUENCIAS.get(idx, []):
+            self.pendientes.append((self.mes + delay, texto, efectos))
+
+    def _aplicar_efectos(self, efectos):
+        """Aplica un dict de efectos al estado del juego."""
+        for i, delta in efectos.get("pop", {}).items():
+            self.facciones[i]["pop"] = max(0, min(9, self.facciones[i]["pop"] + delta))
+        for i, delta in efectos.get("fuerza", {}).items():
+            self.facciones[i]["fuerza"] = max(0, min(9, self.facciones[i]["fuerza"] + delta))
+        self.tesoro += efectos.get("tesoro", 0)
+        self.costos = max(0, self.costos + efectos.get("costos", 0))
+
+    def procesar_consecuencias(self):
+        """Dispara los eventos que corresponden al mes actual."""
+        disparadas = [p for p in self.pendientes if p[0] <= self.mes]
+        self.pendientes = [p for p in self.pendientes if p[0] > self.mes]
+        for _, texto, efectos in disparadas:
+            limpiar()
+            panel("!! CONSECUENCIA DE SU DECISIÓN !!", "", "red")
+            imprimir(f"\n  [bold]{texto}[/bold]\n")
+            self._aplicar_efectos(efectos)
+            cambios = []
+            for i, d in efectos.get("pop", {}).items():
+                cambios.append(f"  Pop. {self.facciones[i]['nombre']}: {'+'if d>0 else ''}{d}")
+            for i, d in efectos.get("fuerza", {}).items():
+                cambios.append(f"  Fuerza {self.facciones[i]['nombre']}: {'+'if d>0 else ''}{d}")
+            if efectos.get("tesoro"):
+                d = efectos["tesoro"]
+                cambios.append(f"  Tesoro: {'+'if d>0 else ''}${abs(d)},000")
+            if efectos.get("costos"):
+                d = efectos["costos"]
+                cambios.append(f"  Costos mensuales: {'suben' if d>0 else 'bajan'} ${abs(d)},000/mes")
+            for c in cambios:
+                imprimir(c)
+            pausa(2.5)
 
     def efecto_no(self, idx, gs):
         """Aplica efecto de decir NO a la facción gs (0-indexed)."""
@@ -769,6 +899,9 @@ class Juego:
                 self.tesoro -= self.costos
             if self.tesoro < 0:
                 self.quiebra()
+
+            # Consecuencias de decisiones anteriores
+            self.procesar_consecuencias()
 
             # Mostrar mes
             limpiar()
